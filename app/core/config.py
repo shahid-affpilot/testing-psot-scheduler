@@ -14,11 +14,13 @@ class Settings(BaseSettings):
     DATABASE_URL: Optional[str] = None
     JWT_SECRET_KEY: str
     FRONTEND_URL: str
+    CELERY_BROKER_URL: str
+    CELERY_RESULT_BACKEND: str
     
     def get_database_url(self) -> str:
         if self.DATABASE_URL:
             return self.DATABASE_URL
-        return f"mysql+pymysql://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
+        return f"mysql+mysqlconnector://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
     
     def get_jwt_secret_key(self) -> str:
         return self.JWT_SECRET_KEY

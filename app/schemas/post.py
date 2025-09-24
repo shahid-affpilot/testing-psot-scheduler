@@ -1,24 +1,91 @@
-from pydantic import BaseModel, Field, EmailStr
-from typing import Optional, List, Dict
-from datetime import datetime
+from pydantic import BaseModel, Field
+from typing import Optional, List
+from datetime import datetime, timezone
+from fastapi import Form, UploadFile, File
+import json
 
-from .enums import PlatformType, PostTone, PostStatus, ProductCategory
-
-class PlatformItem(BaseModel):
-    platform: PlatformType
-    platform_id: int
+from app.schemas.enums import PlatformType, ProductCategory, PostStatus, PostTone
 
 class PostSubmitRequest(BaseModel):
     user_id: int
     content_text: str
-    platform_list: Optional[List[PlatformItem]] = None  # List of platform types with their IDs
+    platforms: List[PlatformType]
     product_id: Optional[int] = None
     schedule_time: Optional[datetime] = None
-    content_tone: PostTone = PostTone.CASUAL
-    hashtags: Optional[List[str]] = None
+    hashtags: List[str] = Field(default_factory=list)
     target_audience: Optional[str] = None
-    image_url: Optional[str] = None
-    api_ids: Optional[List[int]] = None
+    call_to_action: Optional[str] = None
+    content_tone: PostTone = PostTone.CASUAL
+    api_ids: Optional[List[int]] = None # Added api_ids
+
+    @classmethod
+    def as_form(
+        cls,
+        user_id: int = Form(...),
+        content_text: str = Form(...),
+        platform_list: List[str] = Form(..., alias="platform_list"),
+        product_id: Optional[int] = Form(None),
+        schedule_time: Optional[str] = Form(None),
+        hashtags: str = Form(""),
+        target_audience: Optional[str] = Form(None),
+        call_to_action: Optional[str] = Form(None),
+        content_tone: str = Form("casual"),
+        api_ids: str = Form(""), # Added api_ids as string
+    ):
+        # Parse platforms from "platform_name:id" format
+        platforms_parsed = []
+        for p_str in platform_list:
+            platform_name = p_str.split(':')[0]
+            try:
+                platforms_parsed.append(PlatformType(platform_name))
+            except ValueError:
+                pass
+
+        # Parse hashtags from comma-separated string
+        hashtags_list = [h.strip() for h in hashtags.split(',') if h.strip()] if hashtags else []
+        
+        # Parse api_ids from comma-separated string
+        api_ids_list = [int(i.strip()) for i in api_ids.split(',') if i.strip()] if api_ids else None
+
+        schedule_time_dt = datetime.strptime(schedule_time, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc) if schedule_time else None
+
+        return cls(
+            user_id=user_id,
+            content_text=content_text,
+            platforms=platforms_parsed,
+            product_id=product_id,
+            schedule_time=schedule_time_dt,
+            hashtags=hashtags_list,
+            target_audience=target_audience,
+            call_to_action=call_to_action,
+            content_tone=PostTone(content_tone.lower()),
+            api_ids=api_ids_list, # Assign parsed api_ids
+        )
+
+def get_post_submit_form(
+    user_id: int = Form(...),
+    content_text: str = Form(...),
+    platform_list: List[str] = Form(..., alias="platform_list"),
+    product_id: Optional[int] = Form(None),
+    schedule_time: Optional[str] = Form(None),
+    hashtags: str = Form(""),
+    target_audience: Optional[str] = Form(None),
+    call_to_action: Optional[str] = Form(None),
+    content_tone: str = Form("casual"),
+    api_ids: str = Form(""), # Added api_ids as string
+) -> PostSubmitRequest:
+    return PostSubmitRequest.as_form(
+        user_id=user_id,
+        content_text=content_text,
+        platform_list=platform_list,
+        product_id=product_id,
+        schedule_time=schedule_time,
+        hashtags=hashtags,
+        target_audience=target_audience,
+        call_to_action=call_to_action,
+        content_tone=content_tone,
+        api_ids=api_ids,
+    )
 
 class ImageResponse(BaseModel):
     id: int

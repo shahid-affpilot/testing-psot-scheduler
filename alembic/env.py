@@ -37,7 +37,8 @@ db_port = os.getenv("DB_PORT", "5432")
 db_name = os.getenv("DB_NAME", "affpilot")
 db_user = os.getenv("DB_USER", "affpilot")
 db_password = os.getenv("DB_PASSWORD", "affpilot")
-db_url = f"postgresql+psycopg2://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
+db_url = f"mysql+mysqlconnector://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
+
 # Prefer the application's DATABASE_URL when available so Alembic uses the
 # exact same connection string as the application. Otherwise fall back to
 # constructing a URL that matches the application's default (MySQL via pymysql).

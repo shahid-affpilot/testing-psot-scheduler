@@ -1,10 +1,9 @@
-import os
 from celery import Celery
 from celery.signals import worker_process_init
+from app.core.config import settings
 
-redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
 
-celery_app = Celery("affpilot")
+celery_app = Celery("ai-post-scheduler")
 
 @worker_process_init.connect
 def init_worker(**kwargs):
@@ -13,16 +12,15 @@ def init_worker(**kwargs):
     reset_worker_optimizations()
 
 celery_app.conf.update(
-    broker_url=redis_url,
-    result_backend=redis_url,
+    broker_url=settings.CELERY_BROKER_URL,
+    result_backend=settings.CELERY_RESULT_BACKEND,
     task_serializer='json',
     accept_content=['json'],
     result_serializer='json',
     timezone='UTC',
     enable_utc=True,
     include=[
-        'app.tasks.ai_info_article',
-        'app.tasks.ai_review_article',
+        'app.tasks.services.schedule_post',
     ],
     worker_prefetch_multiplier=1,
 )

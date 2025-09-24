@@ -1,6 +1,7 @@
-from typing import List, Optional
+from typing import List, Optional, Union
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
+from sqlalchemy import event
 
 from app.models.post import Post
 from app.models.image import Image
@@ -16,6 +17,9 @@ from app.crud.social_platform import SocialPlatformCRUD
 from app.crud.api import ApiCRUD
 from app.services.ai_providers import AIProviderFactory
 from app.tasks.services.schedule_post import publish_post_task
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 # Orchestrates post business logic: create/list/detail and AI utilities
@@ -30,6 +34,7 @@ class PostService:
 
     # Ensure a SocialPlatform exists for the user and platform
     def _get_or_create_platform(self, user_id: int, platform_type: PlatformType) -> SocialPlatform:
+        logger.debug(f"Getting or creating platform {platform_type} for user {user_id}")
         platform = self.platform_crud.get_by_user_and_type(user_id, platform_type)
         if platform:
             return platform
@@ -38,21 +43,32 @@ class PostService:
         return platform
 
     # Create post(s) per selected platforms; attach image from file or URL
-    def submit(self, payload: PostSubmitRequest, image_file_path: Optional[str] = None) -> PostSubmitResponse:
+    def submit(self, payload: Union[PostSubmitRequest, dict], image_file_path: Optional[str] = None) -> PostSubmitResponse:
+        logger.info("Starting post submission process")
+        # normalize payload (accept dicts from endpoint or Pydantic model)
+        if isinstance(payload, dict):
+            payload = PostSubmitRequest(**payload)
+
+        logger.info(f"Submitting post for user {payload.user_id}")
+        
         image_obj: Optional[Image] = None
         if image_file_path:
+            logger.info(f"Creating image from file path: {image_file_path}")
             image_obj = Image(type=ImageType.FILE, path=image_file_path)
             self.image_crud.create(image_obj)
         elif getattr(payload, "image_url", None):
+            logger.info(f"Creating image from URL: {payload.image_url}")
             image_obj = Image(type=ImageType.URL, path=payload.image_url)
             self.image_crud.create(image_obj)
 
-        platform_list = payload.platform_list
+        logger.info(f"Image object created: {image_obj}")
+
+        platforms_to_process = payload.platforms # Changed from platform_list
 
         created_posts: List[Post] = []
-        for platform in platform_list:
-            platform_type, platform_id = list(platform.items())[0]
-            platform = self._get_or_create_platform(payload.user_id, platform_type)
+        for platform_type in platforms_to_process:
+            logger.info(f"Processing platform: {platform_type.value}")
+            social_platform = self._get_or_create_platform(payload.user_id, platform_type)
             content_json = {
                 "text": payload.content_text,
                 "hashtags": payload.hashtags or [],
@@ -62,38 +78,48 @@ class PostService:
             published_at = None
             if not payload.schedule_time:
                 published_at = datetime.now(timezone.utc)
+            
+            logger.info(f"Creating post for platform: {platform_type.value}")
             post = Post(
                 type=PostType.IMAGE if image_obj else PostType.TEXT,
                 content_text=content_json,
                 content_tone=payload.content_tone,
-                platform_id=platform.id,
+                platform_id=social_platform.id,
                 product_id=payload.product_id,
                 image_id=image_obj.id if image_obj else None,
                 user_id=payload.user_id,
                 schedule_time=payload.schedule_time,
                 status=status_val,
-                api_ids=payload.api_ids,
+                api_ids=payload.api_ids, # Now payload has api_ids
                 published_at=published_at,
             )
             self.post_crud.create(post)
             created_posts.append(post)
+            logger.info(f"Post created with ID: {post.id}")
 
-            # Schedule via Celery if scheduled
-            if payload.schedule_time:
+            def schedule_task(post_id, schedule_time):
+                logger.info(f"Scheduling post {post_id} for {schedule_time}")
                 publish_post_task.apply_async(
-                    args=[post.id],
-                    eta=payload.schedule_time  # datetime object in UTC
+                    args=[post_id],
+                    eta=schedule_time  # datetime object in UTC
                 )
+                logger.info(f"Task for post {post_id} sent to Celery.")
+
+            if payload.schedule_time:
+                # Use a lambda to capture the current post's id and schedule_time
+                event.listen(self.db, 'after_commit', lambda session: schedule_task(post.id, payload.schedule_time), once=True)
+
 
         first = created_posts[0]
         image_resp = ImageResponse(id=first.image.id, path=first.image.path) if first.image else None
 
+        logger.info("Post submission process completed successfully, returning response.")
         return PostSubmitResponse(
             status_code=200,
             status_type="success",
             message="Post submitted successfully",
             data=PostSubmitResData(
-                platforms=[p.platform_type for p in created_posts],  # updated attribute name
+                platforms=[p.platform.type for p in created_posts],  # updated attribute name
                 product_id=payload.product_id,
                 schedule_time=payload.schedule_time,
                 status=first.status,
@@ -168,4 +194,4 @@ class PostService:
             content_tone=p.content_tone,
             created_at=p.created_at,
             modified_at=p.modified_at,
-        ) 
+        )
