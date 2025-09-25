@@ -27,6 +27,24 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+def _extract_json(response_str: str, expect_type: str = 'dict') -> Optional[dict or list]:
+    """Extracts a JSON object or array from a string, even if it's embedded in other text."""
+    if expect_type == 'dict':
+        start_char, end_char = '{', '}'
+    else: # expect_type == 'list'
+        start_char, end_char = '[', ']'
+
+    try:
+        start_index = response_str.find(start_char)
+        end_index = response_str.rfind(end_char)
+        
+        if start_index != -1 and end_index != -1:
+            json_str = response_str[start_index : end_index + 1]
+            return json.loads(json_str)
+    except (json.JSONDecodeError, TypeError):
+        logger.warning(f"Failed to extract or parse JSON from response: {response_str}")
+    
+    return None
 
 # Orchestrates post business logic: create/list/detail and AI utilities
 class PostService:
@@ -38,7 +56,7 @@ class PostService:
         self.api_crud = ApiCRUD(db)
         self.ai_factory = AIProviderFactory(self.api_crud)
 
-    # Ensure a SocialPlatform exists for the user and platform
+    # ... (no changes to _get_or_create_platform and submit methods)
     def _get_or_create_platform(self, user_id: int, platform_type: PlatformType) -> SocialPlatform:
         logger.debug(f"Getting or creating platform {platform_type} for user {user_id}")
         platform = self.platform_crud.get_by_user_and_type(user_id, platform_type)
@@ -48,10 +66,8 @@ class PostService:
         self.platform_crud.create(platform)
         return platform
 
-    # Create post(s) per selected platforms; attach image from file or URL
     def submit(self, payload: Union[PostSubmitRequest, dict], image_file_path: Optional[str] = None) -> PostSubmitResponse:
         logger.info("Starting post submission process")
-        # normalize payload (accept dicts from endpoint or Pydantic model)
         if isinstance(payload, dict):
             payload = PostSubmitRequest(**payload)
 
@@ -69,7 +85,7 @@ class PostService:
 
         logger.info(f"Image object created: {image_obj}")
 
-        platforms_to_process = payload.platforms # Changed from platform_list
+        platforms_to_process = payload.platforms
 
         created_posts: List[Post] = []
         for platform_type in platforms_to_process:
@@ -96,7 +112,7 @@ class PostService:
                 user_id=payload.user_id,
                 schedule_time=payload.schedule_time,
                 status=status_val,
-                api_ids=payload.api_ids, # Now payload has api_ids
+                api_ids=payload.api_ids,
                 published_at=published_at,
             )
             self.post_crud.create(post)
@@ -107,25 +123,20 @@ class PostService:
                 logger.info(f"Scheduling post {post_id} for {schedule_time}")
                 publish_post_task.apply_async(
                     args=[post_id],
-                    eta=schedule_time  # datetime object in UTC
+                    eta=schedule_time
                 )
                 logger.info(f"Task for post {post_id} sent to Celery.")
 
             if payload.schedule_time:
-                # Use a lambda to capture the current post's id and schedule_time
                 event.listen(self.db, 'after_commit', lambda session: schedule_task(post.id, payload.schedule_time), once=True)
 
-
         first = created_posts[0]
-        image_resp = ImageResponse(id=first.image.id, path=first.image.path) if first.image else None
-
-        logger.info("Post submission process completed successfully, returning response.")
         return PostSubmitResponse(
             status_code=200,
             status_type="success",
             message="Post submitted successfully",
             data=PostSubmitResData(
-                platforms=[p.platform.type for p in created_posts],  # updated attribute name
+                platforms=[p.platform.type for p in created_posts],
                 product_id=payload.product_id,
                 schedule_time=payload.schedule_time,
                 status=first.status,
@@ -134,7 +145,6 @@ class PostService:
             )
         )
 
-    # Paginated list with light mapping to response schema
     def list(self, limit: int, offset: int) -> PostListResponse:
         items = self.post_crud.list(limit=limit, offset=offset)
         total = self.post_crud.count()
@@ -145,14 +155,12 @@ class PostService:
             offset=offset,
         )
 
-    # Single post detail view mapping
     def detail(self, post_id: int) -> Optional[PostDetailResponse]:
         post = self.post_crud.get(post_id)
         if not post:
             return None
         return self._to_detail(post)
 
-    # AI hashtag + content analysis via provider selected per user
     async def suggest_hashtags(self, user_id: int, payload: AISuggestionsRequest) -> AISuggestionsResponse:
         """Generates AI suggestions by running hashtag and analysis prompts concurrently."""
         provider = self.ai_factory.get_provider(user_id)
@@ -168,27 +176,15 @@ class PostService:
             )
         except Exception as e:
             logger.error(f"AI provider failed during asyncio.gather: {e}")
-            hashtag_response_str, analysis_response_str = "[]", "{}"
+            hashtag_response_str, analysis_response_str = "", ""
 
-        try:
-            hashtags = json.loads(hashtag_response_str)
-            if not isinstance(hashtags, list):
-                hashtags = ["#parsing_error"]
-        except (json.JSONDecodeError, TypeError):
-            logger.warning(f"Failed to parse hashtag JSON: {hashtag_response_str}")
-            hashtags = ["#ai_error"]
+        hashtags = _extract_json(hashtag_response_str, expect_type='list') or ["#ai_error"]
+        analysis_data = _extract_json(analysis_response_str, expect_type='dict') or {}
 
-        try:
-            analysis_data = json.loads(analysis_response_str)
-            if not isinstance(analysis_data, dict):
-                 analysis_data = {}
-            content_review = ContentReview(
-                score=analysis_data.get("score", 0),
-                suggestions=analysis_data.get("suggestions", ["Could not analyze content."])
-            )
-        except (json.JSONDecodeError, TypeError):
-            logger.warning(f"Failed to parse analysis JSON: {analysis_response_str}")
-            content_review = ContentReview(score=0, suggestions=["AI response was not valid JSON."])
+        content_review = ContentReview(
+            score=analysis_data.get("score", 0),
+            suggestions=analysis_data.get("suggestions", ["Could not analyze content."])
+        )
 
         optimized_content = f"{payload.content_text} {' '.join(hashtags[:3])}"
 
@@ -206,15 +202,15 @@ class PostService:
         logger.info(f"Requesting best posting time for user {payload.user_id}")
         response_str = await provider.ask(prompt, temperature=0.6, max_tokens=200)
 
-        try:
-            data = json.loads(response_str)
-            suggestions = data.get("suggestions", ["Could not determine best posting times."])
-        except (json.JSONDecodeError, TypeError):
-            logger.warning(f"Failed to parse best time JSON: {response_str}")
-            suggestions = ["AI response was not valid JSON."]
+        data = _extract_json(response_str, expect_type='dict')
+        if data and isinstance(data.get("suggestions"), list):
+            suggestions = data["suggestions"]
+        else:
+            suggestions = ["AI response was not in the expected format."]
 
         return AIBestTimeResponse(suggestions=suggestions)
 
+    # ... (no changes to _to_list_item and _to_detail methods)
     def _to_list_item(self, p: Post) -> PostListItem:
         image = ImageResponse(id=p.image.id, path=p.image.path) if p.image else None
         return PostListItem(

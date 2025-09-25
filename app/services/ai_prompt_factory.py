@@ -21,5 +21,12 @@ The insight should be a single, impactful sentence."""
 
 def create_best_posting_time_prompt(platforms: List[str], audience_description: Optional[str]) -> str:
     """Creates a prompt to ask the AI for the best time to post."""
-    return f"""Based on the target platforms ({', '.join(platforms)}) and the audience ('{audience_description or 'a general audience'}'), what are the 3 best times to post for maximum engagement? 
-Return a JSON object with a key 'suggestions' containing a list of strings. For example: {{"suggestions": ["Weekday mornings (9-11 AM)", "Weekends after 6 PM"]}}"""
+    return f"""Analyze the best time to post for maximum engagement based on these details:
+- Target Platforms: {', '.join(platforms)}
+- Audience: {audience_description or 'a general audience'}
+
+Your response MUST be ONLY a single, valid JSON object. Do not include any other text, explanation, or markdown formatting.
+The JSON object must have a single key named "suggestions" which holds a list of 3 short string recommendations.
+
+Example of the required exact format:
+{{"suggestions": ["Weekday mornings (9-11 AM)", "Weekends after 6 PM", "Lunchtime (12-2 PM)"]}}"""

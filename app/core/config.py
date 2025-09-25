@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     FRONTEND_URL: str
     CELERY_BROKER_URL: str
     CELERY_RESULT_BACKEND: str
+    USE_DUMMY_AI_PROVIDER: bool = False
     
     def get_database_url(self) -> str:
         if self.DATABASE_URL:

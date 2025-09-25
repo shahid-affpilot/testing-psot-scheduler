@@ -2,10 +2,12 @@ from abc import ABC, abstractmethod
 from typing import List, Optional, Dict, Any
 import httpx
 import json
+import asyncio
 from app.models.api import Api
 from app.models.enums import ApiType
 from app.crud.api import ApiCRUD
 from app.utils.logger import get_logger
+from app.core.config import settings
 
 logger = get_logger(__name__)
 
@@ -90,6 +92,32 @@ class GrokProvider(BaseAIProvider):
         logger.warning("GrokProvider is a placeholder and not implemented.")
         return "Grok response placeholder."
 
+# Dummy provider for frontend development and testing.
+class DummyAIProvider(AIProvider):
+    async def ask(self, prompt: str, temperature: float = 0.7, max_tokens: int = 500) -> str:
+        """Inspects the prompt and returns a mock, schema-compliant response."""
+        logger.info(f"--- DUMMY AI PROVIDER --- Answering prompt: {prompt[:100]}...")
+        await asyncio.sleep(0.2) # Simulate network latency
+
+        if "hashtag" in prompt.lower():
+            return json.dumps(["#dummydata", "#frontendfun", "#fastapi", "#mockresponse"])
+        
+        if "analyze" in prompt.lower():
+            return json.dumps({
+                "score": 88,
+                "suggestions": ["This is a dummy suggestion.", "Consider adding more details.", "Great start!"]
+            })
+
+        if "best time to post" in prompt.lower():
+            return json.dumps({
+                "suggestions": ["Weekday mornings (9-11 AM) are great.", "Try evenings after 7 PM."]
+            })
+        
+        if "insight" in prompt.lower():
+            return "Dummy insight: Posts with images and clear call-to-actions tend to perform best."
+
+        return "This is a generic dummy response from the AI provider."
+
 # Maps API types to their corresponding provider classes.
 PROVIDER_MAP = {
     ApiType.OPENAI: OpenAIProvider,
@@ -104,8 +132,14 @@ class AIProviderFactory:
 
     def get_provider(self, user_id: int) -> AIProvider:
         """
-        Selects the best AI provider for a user based on the lowest load.
+        Selects the best AI provider for a user. If USE_DUMMY_AI_PROVIDER is True,
+        it returns a dummy provider. Otherwise, it selects the real provider
+        with the lowest load.
         """
+        if settings.USE_DUMMY_AI_PROVIDER:
+            logger.warning(f"DUMMY AI PROVIDER is active. No real API calls will be made.")
+            return DummyAIProvider()
+
         api = self.api_crud.get_best_api_by_load(user_id)
         
         if not api:
