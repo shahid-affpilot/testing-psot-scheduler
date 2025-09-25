@@ -6,11 +6,26 @@ from app.api.v1 import router as v1_router
 from app.core.exceptions import ExceptionHandler, BaseAppException
 from app.utils.logger import get_logger
 from app.core.middleware import JWTMiddleware
+from starlette.middleware.cors import CORSMiddleware # New import
 
 logger = get_logger()
 exception_handler = ExceptionHandler(logger)
 
 app = FastAPI()
+
+# New CORS Middleware
+origins = [
+    "http://localhost:5173", # Frontend development server
+    # You can add other origins here for production or other environments
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Register custom exception handlers for consistent error responses
 @app.exception_handler(BaseAppException)

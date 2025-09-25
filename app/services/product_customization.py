@@ -6,6 +6,7 @@ import os
 from app.models.product import Product, ProductDesign
 from app.crud.product import ProductCRUD, ProductDesignCRUD
 from app.schemas.product import ProductDesignCreateRequest, ProductDesignDetailResponse, ProductDesignItem
+from app.schemas.post import ImageResponse # Import ImageResponse
 from app.utils.image_manipulation import overlay_text_on_image
 from app.utils.logger import get_logger
 
@@ -112,4 +113,11 @@ class ProductDesignService:
             created_at=design.created_at,
             modified_at=design.modified_at,
         )
- 
+
+    def get_product_image(self, product_id: int) -> Optional[ImageResponse]:
+        """Fetches a product by ID and returns its associated image details."""
+        product = self.product_crud.get(product_id)
+        if not product or not product.image:
+            logger.warning(f"Product with ID {product_id} or its image not found.")
+            return None
+        return ImageResponse(id=product.image.id, path=product.image.path)

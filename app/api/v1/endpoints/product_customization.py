@@ -7,6 +7,7 @@ from app.schemas.product import (
     ProductDesignListResponse,
     ProductDesignItem
 )
+from app.schemas.post import ImageResponse # Import ImageResponse
 from app.dependencies import get_db
 from app.services.product_customization import ProductDesignService # Renamed service
 
@@ -34,4 +35,11 @@ def get_product_design(design_id: int, db: Session = Depends(get_db)):
     if not design:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product design not found")
     return design
- 
+
+@router.get("/product-images/{product_id}", response_model=ImageResponse)
+def get_product_image(product_id: int, db: Session = Depends(get_db)):
+    service = ProductDesignService(db)
+    image = service.get_product_image(product_id)
+    if not image:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product image not found")
+    return image
