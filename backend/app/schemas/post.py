@@ -5,6 +5,9 @@ from fastapi import Form, UploadFile, File
 import json
 
 from app.schemas.enums import PlatformType, ProductCategory, PostStatus, PostTone
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 class PostSubmitRequest(BaseModel):
     user_id: int
@@ -50,6 +53,7 @@ class PostSubmitRequest(BaseModel):
         # Parse schedule_time - handle both with and without seconds
         schedule_time_dt = None
         if schedule_time:
+            logger.info(f"Received schedule_time from form: '{schedule_time}'")
             try:
                 # Try with seconds first
                 schedule_time_dt = datetime.strptime(schedule_time, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
@@ -58,7 +62,8 @@ class PostSubmitRequest(BaseModel):
                     # Try without seconds (HTML datetime-local format)
                     schedule_time_dt = datetime.strptime(schedule_time, "%Y-%m-%dT%H:%M").replace(tzinfo=timezone.utc)
                 except ValueError:
-                    # If both fail, set to None
+                    # If both fail, log the problematic string and set to None
+                    logger.warning(f"Could not parse schedule_time: '{schedule_time}'")
                     schedule_time_dt = None
 
         return cls(

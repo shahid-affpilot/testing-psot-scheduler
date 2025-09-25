@@ -34,7 +34,7 @@ def publish_post_task(post_id: int):
 
         post_db_id, content_text, status, image_id, platform_type = post_row
 
-        if status != PostStatus.SCHEDULED.value:
+        if status.upper() != PostStatus.SCHEDULED.name:
             logger.warning(f"Post {post_id} is not in a scheduled state (current state: {status}). Aborting.")
             return
 
