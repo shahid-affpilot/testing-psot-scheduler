@@ -1,12 +1,11 @@
 # app/main.py
-# FastAPI app setup: exception handlers, middleware, API routers, and background scheduler lifecycle.
+# FastAPI app setup: exception handlers, middleware, and API routers.
 from fastapi import FastAPI, Request
 from fastapi.exceptions import HTTPException
 from app.api.v1 import router as v1_router
 from app.core.exceptions import ExceptionHandler, BaseAppException
 from app.utils.logger import get_logger
 from app.core.middleware import JWTMiddleware
-from app.services.scheduler import PostPublisherScheduler
 
 logger = get_logger()
 exception_handler = ExceptionHandler(logger)
@@ -31,14 +30,3 @@ app.add_middleware(JWTMiddleware)
 
 # Versioned API router
 app.include_router(v1_router.api_router, prefix="/api/v1")
-
-# Simple background scheduler that marks due scheduled posts as published
-scheduler = PostPublisherScheduler(interval_seconds=10)
-
-@app.on_event("startup")
-async def on_startup():
-    scheduler.start()
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    scheduler.stop()

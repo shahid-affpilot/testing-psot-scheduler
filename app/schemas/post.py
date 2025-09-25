@@ -122,6 +122,14 @@ class AISuggestionsResponse(BaseModel):
     content_review: ContentReview
     optimized_content: str
 
+class AIBestTimeRequest(BaseModel):
+    user_id: int
+    platform_types: List[PlatformType]
+    target_audience: Optional[str] = None
+
+class AIBestTimeResponse(BaseModel):
+    suggestions: List[str]
+
 class ProductInfo(BaseModel):
     id: int
     name: str

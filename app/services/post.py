@@ -2,6 +2,8 @@ from typing import List, Optional, Union
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy import event
+import asyncio
+import json
 
 from app.models.post import Post
 from app.models.image import Image
@@ -9,13 +11,17 @@ from app.models.social_platform import SocialPlatform
 from app.models.enums import PlatformType, PostStatus, PostTone, ImageType, PostType
 from app.schemas.post import (
     PostSubmitRequest, PostSubmitResData, PostSubmitResponse, PostListResponse, PostListItem,
-    PostDetailResponse, ImageResponse, AISuggestionsRequest, AISuggestionsResponse,
+    PostDetailResponse, ImageResponse, AISuggestionsRequest, AISuggestionsResponse, ContentReview,
+    AIBestTimeRequest, AIBestTimeResponse
 )
 from app.crud.post import PostCRUD
 from app.crud.image import ImageCRUD
 from app.crud.social_platform import SocialPlatformCRUD
 from app.crud.api import ApiCRUD
 from app.services.ai_providers import AIProviderFactory
+from app.services.ai_prompt_factory import (
+    create_hashtag_suggestion_prompt, create_content_analysis_prompt, create_best_posting_time_prompt
+)
 from app.tasks.services.schedule_post import publish_post_task
 from app.utils.logger import get_logger
 
@@ -148,19 +154,66 @@ class PostService:
 
     # AI hashtag + content analysis via provider selected per user
     async def suggest_hashtags(self, user_id: int, payload: AISuggestionsRequest) -> AISuggestionsResponse:
+        """Generates AI suggestions by running hashtag and analysis prompts concurrently."""
         provider = self.ai_factory.get_provider(user_id)
-        tags = await provider.suggest_hashtags(payload.content_text, [p.value for p in payload.platform_types])
-        analysis = await provider.analyze_content(payload.content_text)
+
+        hashtag_prompt = create_hashtag_suggestion_prompt(payload.content_text, [p.value for p in payload.platform_types])
+        analysis_prompt = create_content_analysis_prompt(payload.content_text)
+
+        logger.info(f"Requesting hashtag and content analysis for user {user_id}")
+        try:
+            hashtag_response_str, analysis_response_str = await asyncio.gather(
+                provider.ask(hashtag_prompt, temperature=0.7, max_tokens=100),
+                provider.ask(analysis_prompt, temperature=0.5, max_tokens=200)
+            )
+        except Exception as e:
+            logger.error(f"AI provider failed during asyncio.gather: {e}")
+            hashtag_response_str, analysis_response_str = "[]", "{}"
+
+        try:
+            hashtags = json.loads(hashtag_response_str)
+            if not isinstance(hashtags, list):
+                hashtags = ["#parsing_error"]
+        except (json.JSONDecodeError, TypeError):
+            logger.warning(f"Failed to parse hashtag JSON: {hashtag_response_str}")
+            hashtags = ["#ai_error"]
+
+        try:
+            analysis_data = json.loads(analysis_response_str)
+            if not isinstance(analysis_data, dict):
+                 analysis_data = {}
+            content_review = ContentReview(
+                score=analysis_data.get("score", 0),
+                suggestions=analysis_data.get("suggestions", ["Could not analyze content."])
+            )
+        except (json.JSONDecodeError, TypeError):
+            logger.warning(f"Failed to parse analysis JSON: {analysis_response_str}")
+            content_review = ContentReview(score=0, suggestions=["AI response was not valid JSON."])
+
+        optimized_content = f"{payload.content_text} {' '.join(hashtags[:3])}"
+
         return AISuggestionsResponse(
-            hashtag_suggestions=tags,
-            content_review=analysis,
-            optimized_content=f"{payload.content_text} {' '.join(tags[:3])}",
+            hashtag_suggestions=hashtags,
+            content_review=content_review,
+            optimized_content=optimized_content,
         )
 
-    # Lightweight insight helper (used by analytics)
-    async def generate_insight(self, user_id: int, query: Optional[str]) -> str:
-        provider = self.ai_factory.get_provider(user_id)
-        return await provider.generate_insight(query)
+    async def suggest_best_posting_time(self, payload: AIBestTimeRequest) -> AIBestTimeResponse:
+        """Suggests the best time to post based on platform and audience."""
+        provider = self.ai_factory.get_provider(payload.user_id)
+        prompt = create_best_posting_time_prompt([p.value for p in payload.platform_types], payload.target_audience)
+
+        logger.info(f"Requesting best posting time for user {payload.user_id}")
+        response_str = await provider.ask(prompt, temperature=0.6, max_tokens=200)
+
+        try:
+            data = json.loads(response_str)
+            suggestions = data.get("suggestions", ["Could not determine best posting times."])
+        except (json.JSONDecodeError, TypeError):
+            logger.warning(f"Failed to parse best time JSON: {response_str}")
+            suggestions = ["AI response was not valid JSON."]
+
+        return AIBestTimeResponse(suggestions=suggestions)
 
     def _to_list_item(self, p: Post) -> PostListItem:
         image = ImageResponse(id=p.image.id, path=p.image.path) if p.image else None

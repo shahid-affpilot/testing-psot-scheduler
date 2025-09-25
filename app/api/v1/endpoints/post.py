@@ -7,7 +7,8 @@ import json
 from app.dependencies import get_db
 from app.schemas.post import (
     PostSubmitRequest, PostSubmitResponse, PostListResponse,
-    PostDetailResponse, AISuggestionsRequest, AISuggestionsResponse, get_post_submit_form
+    PostDetailResponse, AISuggestionsRequest, AISuggestionsResponse, get_post_submit_form,
+    AIBestTimeRequest, AIBestTimeResponse
 )
 from app.utils.logger import get_logger
 from app.services.post import PostService
@@ -58,3 +59,8 @@ def get_post(req: Request, post_id: int, db: Session = Depends(get_db)):
 async def suggest_hashtag(req: Request, payload: AISuggestionsRequest, db: Session = Depends(get_db)):
     service = PostService(db)
     return await service.suggest_hashtags(payload.user_id, payload)
+
+@router.post("/suggest-best-time", response_model=AIBestTimeResponse)
+async def suggest_best_time(req: Request, payload: AIBestTimeRequest, db: Session = Depends(get_db)):
+    service = PostService(db)
+    return await service.suggest_best_posting_time(payload)

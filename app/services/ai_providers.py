@@ -1,189 +1,128 @@
 from abc import ABC, abstractmethod
 from typing import List, Optional, Dict, Any
 import httpx
-
+import json
+from app.models.api import Api
 from app.models.enums import ApiType
 from app.crud.api import ApiCRUD
+from app.utils.logger import get_logger
 
+logger = get_logger(__name__)
+
+# Defines the simplified interface for all AI service providers.
 class AIProvider(ABC):
     @abstractmethod
-    async def suggest_hashtags(self, text: str, platforms: List[str], metadata: Optional[Dict[str, Any]] = None) -> List[str]:
+    async def ask(self, prompt: str, temperature: float = 0.7, max_tokens: int = 500) -> str:
+        """Sends a prompt to the AI and returns the raw text response."""
         ...
 
-    @abstractmethod
-    async def generate_insight(self, query: Optional[str], metadata: Optional[Dict[str, Any]] = None) -> str:
-        ...
-
-    @abstractmethod
-    async def analyze_content(self, text: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        ...
-
-class OpenAIProvider(AIProvider):
+# Base class for AI providers, handling common HTTP requests and error handling.
+class BaseAIProvider(AIProvider):
     def __init__(self, endpoint: str, access_key: str, secret_key: Optional[str] = None, extra: Optional[Dict[str, Any]] = None):
         self.endpoint = endpoint.rstrip("/")
         self.access_key = access_key
         self.secret_key = secret_key
         self.extra = extra or {}
+        self.model = self.extra.get("model", "default-model")
 
-    async def suggest_hashtags(self, text: str, platforms: List[str], metadata: Optional[Dict[str, Any]] = None) -> List[str]:
-        try:
-            headers = {"Authorization": f"Bearer {self.access_key}"}
-            # include messages as prompt for chat-based APIs
-            messages = [
-                {"role": "user", "content": f"Suggest concise hashtags for the following text targeting platforms {', '.join(platforms)}:\n\n{text}\n\nMetadata: {metadata or {}}"}
-            ]
-            payload = {"action": "suggest_hashtags", "messages": messages, "extra": self.extra}
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.post(self.endpoint, json=payload, headers=headers)
+    async def _make_request(self, payload: Dict[str, Any], headers: Dict[str, str], request_url: Optional[str] = None) -> Dict[str, Any]:
+        """Makes an async HTTP POST request and handles responses."""
+        url = request_url or self.endpoint
+        logger.info(f"Making AI request to {url} with model {self.model}")
+        async with httpx.AsyncClient(timeout=30) as client:
+            try:
+                resp = await client.post(url, json=payload, headers=headers)
                 resp.raise_for_status()
-                data = resp.json()
-                return data.get("hashtags", [])
-        except Exception:
-            return ["#AI", "#OpenAI", "#Automation"]
+                logger.info(f"AI request successful with status {resp.status_code}")
+                return resp.json()
+            except httpx.HTTPStatusError as e:
+                logger.error(f"AI request failed with status {e.response.status_code}: {e.response.text}")
+                raise
+            except httpx.RequestError as e:
+                logger.error(f"AI request failed due to a network error: {e}")
+                raise
 
-    async def generate_insight(self, query: Optional[str], metadata: Optional[Dict[str, Any]] = None) -> str:
+# AI provider for OpenAI models.
+class OpenAIProvider(BaseAIProvider):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.model = self.extra.get("model", "gpt-3.5-turbo")
+
+    async def ask(self, prompt: str, temperature: float = 0.7, max_tokens: int = 500) -> str:
+        headers = {"Authorization": f"Bearer {self.access_key}"}
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        
         try:
-            headers = {"Authorization": f"Bearer {self.access_key}"}
-            messages = [
-                {"role": "user", "content": f"Generate a short actionable insight for the following query:\n\n{query or ''}\n\nMetadata: {metadata or {}}"}
-            ]
-            payload = {"action": "generate_insight", "messages": messages, "extra": self.extra}
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.post(self.endpoint, json=payload, headers=headers)
-                resp.raise_for_status()
-                data = resp.json()
-                return data.get("insight", "")
-        except Exception:
-            return "Posting performance is strong in the morning."
+            response = await self._make_request(payload, headers)
+            return response.get("choices", [{}])[0].get("message", {}).get("content", "")
+        except Exception as e:
+            logger.error(f"OpenAI ask failed: {e}")
+            return ""
 
-    async def analyze_content(self, text: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+# AI provider for Google Gemini models.
+class GeminiProvider(BaseAIProvider):
+    async def ask(self, prompt: str, temperature: float = 0.7, max_tokens: int = 500) -> str:
+        url = f"{self.endpoint}?key={self.access_key}"
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": temperature,
+                "maxOutputTokens": max_tokens,
+            }
+        }
+        
         try:
-            headers = {"Authorization": f"Bearer {self.access_key}"}
-            messages = [
-                {"role": "user", "content": f"Analyze the following content and return a JSON object with a numeric 'score' (0-100) and a list 'suggestions':\n\n{text}\n\nMetadata: {metadata or {}}"}
-            ]
-            payload = {"action": "analyze_content", "messages": messages, "extra": self.extra}
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.post(self.endpoint, json=payload, headers=headers)
-                resp.raise_for_status()
-                data = resp.json()
-                return data if isinstance(data, dict) else {"score": 80, "suggestions": []}
-        except Exception:
-            return {"score": 85, "suggestions": ["Keep it concise", "Add a CTA"]}
+            response = await self._make_request(payload, headers, request_url=url)
+            return response.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+        except Exception as e:
+            logger.error(f"Gemini ask failed: {e}")
+            return ""
 
-class GrokProvider(AIProvider):
-    def __init__(self, endpoint: str, access_key: str, secret_key: Optional[str] = None, extra: Optional[Dict[str, Any]] = None):
-        self.endpoint = endpoint.rstrip("/")
-        self.access_key = access_key
-        self.secret_key = secret_key
-        self.extra = extra or {}
+# AI provider for Grok models (placeholder).
+class GrokProvider(BaseAIProvider):
+    async def ask(self, prompt: str, temperature: float = 0.7, max_tokens: int = 500) -> str:
+        logger.warning("GrokProvider is a placeholder and not implemented.")
+        return "Grok response placeholder."
 
-    async def suggest_hashtags(self, text: str, platforms: List[str], metadata: Optional[Dict[str, Any]] = None) -> List[str]:
-        try:
-            headers = {"Authorization": f"Bearer {self.access_key}"}
-            messages = [
-                {"role": "user", "content": f"Suggest hashtags for the text targeting {', '.join(platforms)}:\n\n{text}\n\nMetadata: {metadata or {}}"}
-            ]
-            payload = {"action": "suggest_hashtags", "messages": messages, "extra": self.extra}
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.post(self.endpoint, json=payload, headers=headers)
-                resp.raise_for_status()
-                return resp.json().get("hashtags", [])
-        except Exception:
-            return ["#Grok", "#Trending"]
+# Maps API types to their corresponding provider classes.
+PROVIDER_MAP = {
+    ApiType.OPENAI: OpenAIProvider,
+    ApiType.GEMINI: GeminiProvider,
+    ApiType.GROK: GrokProvider,
+}
 
-    async def generate_insight(self, query: Optional[str], metadata: Optional[Dict[str, Any]] = None) -> str:
-        try:
-            headers = {"Authorization": f"Bearer {self.access_key}"}
-            messages = [
-                {"role": "user", "content": f"Provide an insight for the following query:\n\n{query or ''}\n\nMetadata: {metadata or {}}"}
-            ]
-            payload = {"action": "generate_insight", "messages": messages, "extra": self.extra}
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.post(self.endpoint, json=payload, headers=headers)
-                resp.raise_for_status()
-                return resp.json().get("insight", "")
-        except Exception:
-            return "Evening posts may reach different audiences."
-
-    async def analyze_content(self, text: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        try:
-            headers = {"Authorization": f"Bearer {self.access_key}"}
-            messages = [
-                {"role": "user", "content": f"Analyze the content and return JSON with 'score' and 'suggestions':\n\n{text}\n\nMetadata: {metadata or {}}"}
-            ]
-            payload = {"action": "analyze_content", "messages": messages, "extra": self.extra}
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.post(self.endpoint, json=payload, headers=headers)
-                resp.raise_for_status()
-                data = resp.json()
-                return data if isinstance(data, dict) else {"score": 78, "suggestions": []}
-        except Exception:
-            return {"score": 80, "suggestions": ["Add visuals", "Clarify CTA"]}
-
-class GeminiProvider(AIProvider):
-    def __init__(self, endpoint: str, access_key: str, secret_key: Optional[str] = None, extra: Optional[Dict[str, Any]] = None):
-        self.endpoint = endpoint.rstrip("/")
-        self.access_key = access_key
-        self.secret_key = secret_key
-        self.extra = extra or {}
-
-    async def suggest_hashtags(self, text: str, platforms: List[str], metadata: Optional[Dict[str, Any]] = None) -> List[str]:
-        try:
-            headers = {"Authorization": f"Bearer {self.access_key}"}
-            messages = [
-                {"role": "user", "content": f"Suggest hashtags for this text for platforms {', '.join(platforms)}:\n\n{text}\n\nMetadata: {metadata or {}}"}
-            ]
-            payload = {"action": "suggest_hashtags", "messages": messages, "extra": self.extra}
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.post(self.endpoint, json=payload, headers=headers)
-                resp.raise_for_status()
-                return resp.json().get("hashtags", [])
-        except Exception:
-            return ["#Gemini", "#Discover"]
-
-    async def generate_insight(self, query: Optional[str], metadata: Optional[Dict[str, Any]] = None) -> str:
-        try:
-            headers = {"Authorization": f"Bearer {self.access_key}"}
-            messages = [
-                {"role": "user", "content": f"Generate an insight for:\n\n{query or ''}\n\nMetadata: {metadata or {}}"}
-            ]
-            payload = {"action": "generate_insight", "messages": messages, "extra": self.extra}
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.post(self.endpoint, json=payload, headers=headers)
-                resp.raise_for_status()
-                return resp.json().get("insight", "")
-        except Exception:
-            return "Mid-week posts have higher engagement."
-
-    async def analyze_content(self, text: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        try:
-            headers = {"Authorization": f"Bearer {self.access_key}"}
-            messages = [
-                {"role": "user", "content": f"Analyze and return JSON with 'score' and 'suggestions' for the content:\n\n{text}\n\nMetadata: {metadata or {}}"}
-            ]
-            payload = {"action": "analyze_content", "messages": messages, "extra": self.extra}
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.post(self.endpoint, json=payload, headers=headers)
-                resp.raise_for_status()
-                data = resp.json()
-                return data if isinstance(data, dict) else {"score": 79, "suggestions": []}
-        except Exception:
-            return {"score": 82, "suggestions": ["Shorten intro", "Use active voice"]}
-
+# Factory to select the appropriate AI provider based on load.
 class AIProviderFactory:
     def __init__(self, api_crud: ApiCRUD):
         self.api_crud = api_crud
 
     def get_provider(self, user_id: int) -> AIProvider:
-        for t in [ApiType.OPENAI, ApiType.GROK, ApiType.GEMINI]:
-            api = self.api_crud.get_by_user_and_type(user_id, t)
-            if api:
-                kwargs = {"endpoint": api.endpoint, "access_key": api.access_key, "secret_key": api.secret_key, "extra": api.extra}
-                if t == ApiType.OPENAI:
-                    return OpenAIProvider(**kwargs)
-                if t == ApiType.GROK:
-                    return GrokProvider(**kwargs)
-                if t == ApiType.GEMINI:
-                    return GeminiProvider(**kwargs)
-        return OpenAIProvider(endpoint="", access_key="")
+        """
+        Selects the best AI provider for a user based on the lowest load.
+        """
+        api = self.api_crud.get_best_api_by_load(user_id)
+        
+        if not api:
+            logger.warning(f"No configured AI provider found for user {user_id}. Using fallback.")
+            return OpenAIProvider(endpoint="", access_key="", extra={"model": "fallback"})
+
+        provider_class = PROVIDER_MAP.get(api.type)
+        
+        if not provider_class:
+            logger.error(f"Provider for type '{api.type}' not found. Falling back.")
+            return OpenAIProvider(endpoint="", access_key="", extra={"model": "fallback"})
+
+        logger.info(f"Using '{api.type.value}' provider for user {user_id} based on lowest load.")
+        kwargs = {
+            "endpoint": api.endpoint,
+            "access_key": api.access_key,
+            "secret_key": api.secret_key,
+            "extra": api.extra
+        }
+        return provider_class(**kwargs)
